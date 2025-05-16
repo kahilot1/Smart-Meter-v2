@@ -24,8 +24,9 @@ app.get('/', (req, res) => {
 // Extra route (for /w)
 app.get('/w', (req, res) => {
     const cards = [
-        { title: 'Current Usage', value: 'Rs 1230.00' },
-        { title: 'Total This Month', value: 'Rs 3200.00' }
+        { title: 'Current Usage / Hour', value: 'Rs 123.00' },
+        { title: 'Daily Average', value: 'Rs 150.00' },
+        { title: 'Estimated Bill', value: 'Rs 3200.00' }
     ];
     
     const chartData = {
