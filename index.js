@@ -3,9 +3,12 @@ const { error } = require('console');
 const e = require('express');
 const express = require('express');
 const mongoose = require('mongoose');
+require('dotenv').config();
 const { double } = require('webidl-conversions');
 const app = express();
 const PORT = 3000;
+const uri = process.env.MONGODB_URI;
+
 
 //function to calculate estimated bill
 function calculateEstimatedBill(currentUsage) {
@@ -52,7 +55,7 @@ function calculateEstimatedBill(currentUsage) {
 
 
 //Connect to MongoDB
-mongoose.connect("mongodb+srv://kahil:Snowman1001@cluster0.rxcoity.mongodb.net/SmartMeter?retryWrites=true&w=majority&appName=Cluster0", {
+mongoose.connect(uri, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 }).then(() => {
