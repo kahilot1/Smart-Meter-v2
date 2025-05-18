@@ -91,11 +91,25 @@ const DailySummary = mongoose.model('DailySummary', dailySummarySchema);
 app.set('view engine', 'ejs');
 app.use(express.static('public'));
 //add the api link thing here
-
-app.post('/api/arduinoData', (req, res) => {
-    console.log("Success");
+app.post('/api/arduinoData', async (req, res) => {
+  try{
     console.log('Received data from ESP32:', req.body);
-    res.status(201).json({ message: 'Data received successfully' });
+    
+    let voltage = req.body.voltage;
+    let current = voltage * 30
+    const newEntry = new RawData({
+      timestamp: new Date(),
+      current: current
+    });
+    await newEntry.save();
+    res.status(200).json({ message: 'Data received successfully' });
+
+  }catch(err){
+    console.log("error");
+    res.status(-1).json({message: 'Data not recieved'})
+  }
+    
+
 });
 
 app.get('/api/kWh', async (req, res) => {
