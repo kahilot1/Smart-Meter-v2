@@ -6,6 +6,7 @@ const mongoose = require('mongoose');
 require('dotenv').config();
 const { double } = require('webidl-conversions');
 const app = express();
+app.use(express.json());
 const PORT = 3000;
 const uri = process.env.MONGODB_URI;
 
@@ -92,8 +93,9 @@ app.use(express.static('public'));
 //add the api link thing here
 
 app.post('/api/arduinoData', (req, res) => {
+    console.log("Success");
     console.log('Received data from ESP32:', req.body);
-    res.status(200).json({ message: 'Data received successfully' });
+    res.status(201).json({ message: 'Data received successfully' });
 });
 
 app.get('/api/kWh', async (req, res) => {
