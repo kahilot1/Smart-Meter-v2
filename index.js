@@ -89,6 +89,12 @@ const DailySummary = mongoose.model('DailySummary', dailySummarySchema);
 
 app.set('view engine', 'ejs');
 app.use(express.static('public'));
+//add the api link thing here
+
+app.post('/api/arduinoData', (req, res) => {
+    console.log('Received data from ESP32:', req.body);
+    res.status(200).json({ message: 'Data received successfully' });
+});
 
 app.get('/api/kWh', async (req, res) => {
     try{
@@ -175,6 +181,8 @@ app.get('/', (req, res) => {
 
   res.render('index', { cards, chartData, linkText: 'Switch to Monetary Values', linkVal : '/w', option: 'kWh'});
 });
+
+
 
 // Extra route (for /w)
 app.get('/w', (req, res) => {
