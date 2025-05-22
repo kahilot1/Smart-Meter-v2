@@ -53,12 +53,47 @@ function calculateEstimatedBill(currentUsage) {
 
     return total;
 }
+function calculateEstimatedBillMod(currentUsage) {
+  if (currentUsage < 0) {
+      return 0;
+  }
+
+  const rates = [
+      [25, 3.16],
+      [25, 4.38],
+      [25, 4.74],
+      [25, 5.45],
+      [100, 6.15],
+      [50, 7.02],
+      [50, 7.90],
+      [Infinity, 8.77]
+  ];
+
+  let total = 0;
+  let remainingUsage = currentUsage;
+
+  for (let [band_kwh, rate_per_kwh] of rates) {
+      if (remainingUsage > 0) {
+          if (remainingUsage <= band_kwh) {
+              total += remainingUsage * rate_per_kwh;
+              remainingUsage = 0;
+          } else {
+              total += band_kwh * rate_per_kwh;
+              remainingUsage -= band_kwh;
+          }
+      } else {
+          break;
+      }
+  }
+
+
+  return total;
+}
+
 
 
 //Connect to MongoDB
 mongoose.connect(uri, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
 }).then(() => {
   console.log("Connected to MongoDB");
 }).catch(err => {
@@ -111,7 +146,75 @@ app.post('/api/arduinoData', async (req, res) => {
     
 
 });
+app.get('/api/monetary', async (req, res) => {
+  try{
+  let currentUsage = await RawData.findOne().sort({ timestamp: -1 }).limit(1);
+  currentUsage = calculateEstimatedBillMod(currentUsage.current);
 
+  let totalThisMonth = await DailySummary.aggregate([
+    {
+      $match: {
+        date: {
+          $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+        }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        totalDays: { $addToSet: { $dateToString: { format: "%Y-%m-%d", date: "$date" } } },
+        totalCurrentMonth: { $sum: "$averageCurrent" }
+      }
+    },
+    {
+      $project: {
+        _id: 0,
+        totalDays: { $size: "$totalDays" },
+        totalCurrentMonth: 1
+      }
+    },
+    {
+      // If the aggregation returned no documents, this stage inserts a default document
+      $unionWith: {
+        coll: "DailySummary",
+        pipeline: [
+          { $match: { _id: { $exists: false } } }, // matches nothing
+          {
+            $project: {
+              totalDays: { $literal: 0 },
+              totalCurrentMonth: { $literal: 0 }
+            }
+          }
+        ]
+      }
+    },
+    {
+      $limit: 1 // Ensures only one document is returned, either the aggregation result or the default
+    }
+  ]);
+
+  let averageDailyUsage = totalThisMonth[0].totalCurrentMonth / totalThisMonth[0].totalDays;
+  averageDailyUsage = averageDailyUsage * 240 / 1000;
+
+
+  res.json({
+
+    currentUsage: currentUsage.toFixed(2),
+    dailyAverage: calculateEstimatedBillMod(averageDailyUsage).toFixed(2),
+    estimatedBill: calculateEstimatedBill(averageDailyUsage * 30 * 24).toFixed(2),
+
+  });}catch(err) {
+    console.error("Error fetching data", err);
+    res.status(500).json({ 
+        error: "Internal Server Error",
+        currentUsage: "Internal Server Error",
+        totalThisMonth: "Internal Server Error",
+        dailyAverage: "Internal Server Error" 
+
+    });
+  }
+
+});
 app.get('/api/kWh', async (req, res) => {
     try{
         // Find Current usage, total this month and estimated bill(averageDay * 30)
@@ -190,8 +293,10 @@ app.get('/', (req, res) => {
   ];
 
   const chartData = {
-    labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
-    values: [80, 120, 150, 90],
+    labels: ['12 AM', '1 AM', '2 AM', '3 AM', '4 AM', '5 AM', '6 AM', '7 AM', '8 AM', '9 AM', '10 AM', '11 AM', '12 PM', '1 PM', '2 PM', '3 PM', '4 PM', '5 PM', '6 PM', '7 PM', '8 PM', '9 PM', '10 PM', '11 PM'],
+    values: [92.3, 78.1, 66.5, 54.7, 99.2, 70.0, 88.9, 59.6,
+      85.4, 73.3, 63.1, 97.5, 51.8, 60.4, 55.9, 80.2,
+      68.7, 90.1, 76.6, 98.0, 58.3, 65.2, 87.7, 72.5],
     unit: 'kWh'
   };
 
@@ -203,15 +308,17 @@ app.get('/', (req, res) => {
 // Extra route (for /w)
 app.get('/w', (req, res) => {
     const cards = [
-        { title: 'Live Usage / Hour', value: 'Rs 123.00' },
-        { title: 'Daily Average', value: 'Rs 150.00' },
-        { title: 'Estimated Bill', value: 'Rs 3200.00' }
+        { title: 'Live Usage / Hour', value: 'Rs 123.00', id: 'currentUsage', unit: 'Rs' },
+        { title: 'Daily Average', value: 'Rs 150.00', id: 'dailyAverage', unit: 'Rs' },
+        { title: 'Estimated Bill', value: 'Rs 3200.00', id: 'estimatedBill', unit: 'Rs' },
     ];
     
     const chartData = {
-        labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
-        values: [50, 100, 70, 90],
-        unit: 'Rs'
+        labels: ['12 AM', '1 AM', '2 AM', '3 AM', '4 AM', '5 AM', '6 AM', '7 AM', '8 AM', '9 AM', '10 AM', '11 AM', '12 PM', '1 PM', '2 PM', '3 PM', '4 PM', '5 PM', '6 PM', '7 PM', '8 PM', '9 PM', '10 PM', '11 PM'],
+        values: [117.3, 135.9, 141.2, 89.5, 125.0, 93.6, 144.8, 109.2,
+          85.7, 120.3, 97.4, 106.6, 148.9, 130.5, 101.1, 137.8,
+          112.7, 83.3, 91.0, 147.2, 104.9, 139.4, 128.6, 100.0],
+        unit: 'Rs/Hour'
     };
     
     res.render('index', { cards, chartData, linkText: 'Switch to kWh Values', linkVal : '/', option: 'monetary' });
