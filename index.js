@@ -138,7 +138,7 @@ app.post('/api/arduinoData', async (req, res) => {
 
     if (lastEntry) {
       // Time difference in hours
-      const diffMs = currentTimestamp - lastEntry.timestamp;
+      let diffMs = currentTimestamp - lastEntry.timestamp;
       if (diffMs < 0) {
         return res.status(400).json({ message: 'Timestamp is earlier than the last entry' });
       }
