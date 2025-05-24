@@ -121,7 +121,7 @@ app.post('/api/arduinoData', async (req, res) => {
   try {
     const { voltage, timestamp } = req.body;
 
-    if (!voltage || !timestamp) {
+    if (voltage===undefined || timestamp===undefined) {
       return res.status(400).json({ message: 'Missing voltage or timestamp' });
     }
 
@@ -264,7 +264,7 @@ app.get('/api/monetary/slow', async (req, res) => {
           averageDailyUsage: 1
         }
       }]);
-    const estimatedBill = calculateEstimatedBill(averageDailyUsage[0].averageDailyUsage * 30 * 24);
+    const estimatedBill = calculateEstimatedBill(averageDailyUsage[0].averageDailyUsage * 30);
     let totalTodayValue = totalToday[0] ? totalToday[0].totalEnergyToday : 0;
     totalTodayValue = calculateEstimatedBillMod(totalTodayValue);
 
