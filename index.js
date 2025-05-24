@@ -3,6 +3,7 @@ const { error } = require('console');
 const e = require('express');
 const express = require('express');
 const mongoose = require('mongoose');
+const { diff } = require('util');
 require('dotenv').config();
 const { double } = require('webidl-conversions');
 const app = express();
@@ -11,7 +12,7 @@ const PORT = 3000;
 const uri = process.env.MONGODB_URI;
 
 
-//function to calculate estimated bill
+//functions to calculate estimated bill
 function calculateEstimatedBill(currentUsage) {
     if (currentUsage < 0) {
         return 0;
@@ -104,191 +105,394 @@ mongoose.connect(uri, {
 // Schema and Model
 const rawDataSchema = new mongoose.Schema({
     timestamp: Date,
-    current: Number
+    current: Number,
+    kWh: Number
   }, {
     collection: 'rawData'  // ← match the collection name exactly
   });
   
 const RawData = mongoose.model('RawData', rawDataSchema);
 
-const dailySummarySchema = new mongoose.Schema({
-    date: Date,
-    readingsCount: Int32,
-    averageCurrent: Number,
-    createdAt: Date
-    }, {
-    collection: 'dailySummaries'  // ← match the collection name exactly
-  });
-
-const DailySummary = mongoose.model('DailySummary', dailySummarySchema);
-
-
 app.set('view engine', 'ejs');
 app.use(express.static('public'));
+
 //add the api link thing here
 app.post('/api/arduinoData', async (req, res) => {
-  try{
-    console.log('Received data from ESP32:', req.body);
-    
-    let voltage = req.body.voltage;
-    let current = voltage * 30
-    const newEntry = new RawData({
-      timestamp: new Date(),
-      current: current
-    });
-    await newEntry.save();
-    res.status(200).json({ message: 'Data received successfully' });
+  try {
+    const { voltage, timestamp } = req.body;
 
-  }catch(err){
-    console.log("error");
-    res.status(-1).json({message: 'Data not recieved'})
-  }
-    
-
-});
-app.get('/api/monetary', async (req, res) => {
-  try{
-  let currentUsage = await RawData.findOne().sort({ timestamp: -1 }).limit(1);
-  currentUsage = calculateEstimatedBillMod(currentUsage.current);
-
-  let totalThisMonth = await DailySummary.aggregate([
-    {
-      $match: {
-        date: {
-          $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-        }
-      }
-    },
-    {
-      $group: {
-        _id: null,
-        totalDays: { $addToSet: { $dateToString: { format: "%Y-%m-%d", date: "$date" } } },
-        totalCurrentMonth: { $sum: "$averageCurrent" }
-      }
-    },
-    {
-      $project: {
-        _id: 0,
-        totalDays: { $size: "$totalDays" },
-        totalCurrentMonth: 1
-      }
-    },
-    {
-      // If the aggregation returned no documents, this stage inserts a default document
-      $unionWith: {
-        coll: "DailySummary",
-        pipeline: [
-          { $match: { _id: { $exists: false } } }, // matches nothing
-          {
-            $project: {
-              totalDays: { $literal: 0 },
-              totalCurrentMonth: { $literal: 0 }
-            }
-          }
-        ]
-      }
-    },
-    {
-      $limit: 1 // Ensures only one document is returned, either the aggregation result or the default
+    if (!voltage || !timestamp) {
+      return res.status(400).json({ message: 'Missing voltage or timestamp' });
     }
-  ]);
 
-  let averageDailyUsage = totalThisMonth[0].totalCurrentMonth / totalThisMonth[0].totalDays;
-  averageDailyUsage = averageDailyUsage * 240 / 1000;
+    // Calculate current from voltage
+    const current = voltage * 30;
+
+    // Parse timestamp from client
+    const currentTimestamp = new Date(timestamp);
+
+    // Fetch last reading from DB (assuming sorted by timestamp descending)
+    const lastEntry = await RawData.findOne().sort({ timestamp: -1 });
+
+    let kWh = 0;
+
+    if (lastEntry) {
+      // Time difference in hours
+      const diffMs = currentTimestamp - lastEntry.timestamp;
+      if (diffMs < 0) {
+        return res.status(400).json({ message: 'Timestamp is earlier than the last entry' });
+      }
+      // Make sure reading are not too far apart (maximum 3 seconds)
+      if (diffMs > 3000) {
+        diffMs = 3000; // cap to 3 seconds
+      }
+      const diffHrs = diffMs / (1000 * 60 * 60);
+
+      // Calculate power in kW (assuming you have voltage or calculate power)
+      // Here, assuming current is in amps and voltage constant (say 230V)
+      const powerKW = (230 * current) / 1000; // watts to kW
+
+      // Energy = power * time
+      kWh = powerKW * diffHrs;
+      if (kWh < 0) kWh = 0; // just in case timestamps messed up
+    }else{
+      // If no last entry, assume this is the first reading
+      kWh = 0; // No previous data to compare against
+    }
+
+    const newEntry = new RawData({
+      timestamp: currentTimestamp,
+      current: current,
+      kWh: kWh
+    });
+
+    await newEntry.save();
+
+    res.status(200).json({ message: 'Data received successfully', kWh: kWh.toFixed(4) });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Data not received' });
+  }
+});
 
 
-  res.json({
+app.get('/api/monetary/fast', async (req, res) => {
+  try{
+    let currentUsage = await RawData.findOne().sort({ timestamp: -1 }).limit(1);
 
-    currentUsage: currentUsage.toFixed(2),
-    dailyAverage: calculateEstimatedBillMod(averageDailyUsage).toFixed(2),
-    estimatedBill: calculateEstimatedBill(averageDailyUsage * 30 * 24).toFixed(2),
+    currentUsage = calculateEstimatedBillMod(currentUsage.current*240/1000);
 
-  });}catch(err) {
+    res.json({
+      currentUsage: currentUsage.toFixed(2)
+    });
+
+  }catch(err) {
     console.error("Error fetching data", err);
     res.status(500).json({ 
-        error: "Internal Server Error",
-        currentUsage: "Internal Server Error",
-        totalThisMonth: "Internal Server Error",
-        dailyAverage: "Internal Server Error" 
-
+        error: "Internal Server Error"
     });
   }
-
 });
-app.get('/api/kWh', async (req, res) => {
-    try{
-        // Find Current usage, total this month and estimated bill(averageDay * 30)
-        const currentUsage = await RawData.findOne().sort({ timestamp: -1 }).limit(1);
-        const totalThisMonth = await DailySummary.aggregate([
-            {
-              $match: {
-                date: {
-                  $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-                }
-              }
-            },
-            {
-              $group: {
-                _id: null,
-                totalDays: { $addToSet: { $dateToString: { format: "%Y-%m-%d", date: "$date" } } },
-                totalCurrentMonth: { $sum: "$averageCurrent" }
-              }
-            },
-            {
-              $project: {
-                _id: 0,
-                totalDays: { $size: "$totalDays" },
-                totalCurrentMonth: 1
-              }
-            },
-            {
-              // If the aggregation returned no documents, this stage inserts a default document
-              $unionWith: {
-                coll: "DailySummary",
-                pipeline: [
-                  { $match: { _id: { $exists: false } } }, // matches nothing
-                  {
-                    $project: {
-                      totalDays: { $literal: 0 },
-                      totalCurrentMonth: { $literal: 0 }
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              $limit: 1 // Ensures only one document is returned, either the aggregation result or the default
-            }
-          ]);
+app.get('/api/kWh/fast', async (req, res) => {
+  try{
+    let currentUsage = await RawData.findOne().sort({ timestamp: -1 }).limit(1);
+
+    currentUsage = currentUsage.current*240/1000;
+
+    res.json({
+      currentUsage: currentUsage.toFixed(2)
+    });
+
+  }catch(err) {
+    console.error("Error fetching data", err);
+    res.status(500).json({ 
+        error: "Internal Server Error"
+    });
+  }
+});
+
+app.get('/api/monetary/slow', async (req, res) => {
+  try{
+    // Find Total today and mont end estimated bill(averageDay * 30)
+    const totalToday = await RawData.aggregate([
+      {
+        $match: {
+          timestamp: {
+            $gte: new Date(new Date().setHours(0, 0, 0, 0)),
+            $lt: new Date(new Date().setHours(24, 0, 0, 0))
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalEnergyToday: { $sum: "$kWh" }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalEnergyToday: 1
+        }
+      }]);
+
+    const averageDailyUsage = await RawData.aggregate([
+      {
+        $match: {
+          timestamp: {
+            $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+            $lt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1)
+          }
+        }
+      },
+      {
+        $group: {
+          _id: { day: { $dayOfMonth: "$timestamp" } },
+          dailyTotal: { $sum: "$kWh" }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          averageDailyUsage: { $avg: "$dailyTotal" }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          averageDailyUsage: 1
+        }
+      }]);
+    const estimatedBill = calculateEstimatedBill(averageDailyUsage[0].averageDailyUsage * 30 * 24);
+    let totalTodayValue = totalToday[0] ? totalToday[0].totalEnergyToday : 0;
+    totalTodayValue = calculateEstimatedBillMod(totalTodayValue);
+
+    res.json({
+      dailyAverage: (totalTodayValue).toFixed(2),
+      estimatedBill: (estimatedBill).toFixed(2)
+    })
+  }catch(err) {
+    console.error("Error fetching data", err);
+    res.status(500).json({ 
+        error: "Internal Server Error"
+    });
+  }
+  
+});
+app.get('/api/kWh/slow', async (req, res) => {
+  try{
+    // Find Total today and mont end estimated bill(averageDay * 30)
+    const totalToday = await RawData.aggregate([
+      {
+        $match: {
+          timestamp: {
+            $gte: new Date(new Date().setHours(0, 0, 0, 0)),
+            $lt: new Date(new Date().setHours(24, 0, 0, 0))
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalEnergyToday: { $sum: "$kWh" }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalEnergyToday: 1
+        }
+      }]);
+
+    const averageDailyUsage = await RawData.aggregate([
+      {
+        $match: {
+          timestamp: {
+            $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+            $lt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1)
+          }
+        }
+      },
+      {
+        $group: {
+          _id: { day: { $dayOfMonth: "$timestamp" } },
+          dailyTotal: { $sum: "$kWh" }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          averageDailyUsage: { $avg: "$dailyTotal" }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          averageDailyUsage: 1
+        }
+      }]);
+    const estimatedBill = calculateEstimatedBill(averageDailyUsage[0].averageDailyUsage * 30 * 24);
+    let totalTodayValue = totalToday[0] ? totalToday[0].totalEnergyToday : 0;
+
+    res.json({
+      dailyAverage: (totalTodayValue).toFixed(2),
+      estimatedBill: (estimatedBill).toFixed(2)
+    })
+  }catch(err) {
+    console.error("Error fetching data", err);
+    res.status(500).json({ 
+        error: "Internal Server Error"
+    });
+  }
+  
+});
+
+// app.get('/api/monetary', async (req, res) => {
+//   try{
+//   let currentUsage = await RawData.findOne().sort({ timestamp: -1 }).limit(1);
+//   currentUsage = calculateEstimatedBillMod(currentUsage.current);
+
+//   let totalThisMonth = await DailySummary.aggregate([
+//     {
+//       $match: {
+//         date: {
+//           $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+//         }
+//       }
+//     },
+//     {
+//       $group: {
+//         _id: null,
+//         totalDays: { $addToSet: { $dateToString: { format: "%Y-%m-%d", date: "$date" } } },
+//         totalCurrentMonth: { $sum: "$averageCurrent" }
+//       }
+//     },
+//     {
+//       $project: {
+//         _id: 0,
+//         totalDays: { $size: "$totalDays" },
+//         totalCurrentMonth: 1
+//       }
+//     },
+//     {
+//       // If the aggregation returned no documents, this stage inserts a default document
+//       $unionWith: {
+//         coll: "DailySummary",
+//         pipeline: [
+//           { $match: { _id: { $exists: false } } }, // matches nothing
+//           {
+//             $project: {
+//               totalDays: { $literal: 0 },
+//               totalCurrentMonth: { $literal: 0 }
+//             }
+//           }
+//         ]
+//       }
+//     },
+//     {
+//       $limit: 1 // Ensures only one document is returned, either the aggregation result or the default
+//     }
+//   ]);
+
+//   let averageDailyUsage = totalThisMonth[0].totalCurrentMonth / totalThisMonth[0].totalDays;
+//   averageDailyUsage = averageDailyUsage * 240 / 1000;
+
+
+//   res.json({
+
+//     currentUsage: currentUsage.toFixed(2),
+//     dailyAverage: calculateEstimatedBillMod(averageDailyUsage).toFixed(2),
+//     estimatedBill: calculateEstimatedBill(averageDailyUsage * 30 * 24).toFixed(2),
+
+//   });}catch(err) {
+//     console.error("Error fetching data", err);
+//     res.status(500).json({ 
+//         error: "Internal Server Error",
+//         currentUsage: "Internal Server Error",
+//         totalThisMonth: "Internal Server Error",
+//         dailyAverage: "Internal Server Error" 
+
+//     });
+//   }
+
+// });
+
+// app.get('/api/kWh', async (req, res) => {
+//     try{
+//         // Find Current usage, total this month and estimated bill(averageDay * 30)
+//         const currentUsage = await RawData.findOne().sort({ timestamp: -1 }).limit(1);
+//         const totalThisMonth = await DailySummary.aggregate([
+//             {
+//               $match: {
+//                 date: {
+//                   $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+//                 }
+//               }
+//             },
+//             {
+//               $group: {
+//                 _id: null,
+//                 totalDays: { $addToSet: { $dateToString: { format: "%Y-%m-%d", date: "$date" } } },
+//                 totalCurrentMonth: { $sum: "$averageCurrent" }
+//               }
+//             },
+//             {
+//               $project: {
+//                 _id: 0,
+//                 totalDays: { $size: "$totalDays" },
+//                 totalCurrentMonth: 1
+//               }
+//             },
+//             {
+//               // If the aggregation returned no documents, this stage inserts a default document
+//               $unionWith: {
+//                 coll: "DailySummary",
+//                 pipeline: [
+//                   { $match: { _id: { $exists: false } } }, // matches nothing
+//                   {
+//                     $project: {
+//                       totalDays: { $literal: 0 },
+//                       totalCurrentMonth: { $literal: 0 }
+//                     }
+//                   }
+//                 ]
+//               }
+//             },
+//             {
+//               $limit: 1 // Ensures only one document is returned, either the aggregation result or the default
+//             }
+//           ]);
         
-        // Log values for debugging
-        console.log("Current Usage:", currentUsage.current);
-        console.log("Total Days This Month:", totalThisMonth[0].totalDays);
-        averageDailyUsage = totalThisMonth[0].totalCurrentMonth / totalThisMonth[0].totalDays;
-        console.log("Average Daily Usage:", averageDailyUsage);
-        // Calculate estimated bill
-        const estimatedBill = calculateEstimatedBill(averageDailyUsage * 30 * 24 * 240/1000);
-        console.log("Estimated Bill:", estimatedBill);
-        res.json({
-            currentUsage: (currentUsage.current*240/1000).toFixed(2),
-            totalThisMonth: (totalThisMonth[0].totalCurrentMonth*240/1000).toFixed(2),
-            estimatedBill: estimatedBill.toFixed(2)
-        });
-    }catch(err) {
-        console.error("Error fetching data", err);
-        res.status(500).json({ 
-            error: "Internal Server Error",
-            currentUsage: "Internal Server Error",
-            totalThisMonth: "Internal Server Error",
-            estimatedBill: "Internal Server Error" 
+//         // Log values for debugging
+//         console.log("Current Usage:", currentUsage.current);
+//         console.log("Total Days This Month:", totalThisMonth[0].totalDays);
+//         averageDailyUsage = totalThisMonth[0].totalCurrentMonth / totalThisMonth[0].totalDays;
+//         console.log("Average Daily Usage:", averageDailyUsage);
+//         // Calculate estimated bill
+//         const estimatedBill = calculateEstimatedBill(averageDailyUsage * 30 * 24 * 240/1000);
+//         console.log("Estimated Bill:", estimatedBill);
+//         res.json({
+//             currentUsage: (currentUsage.current*240/1000).toFixed(2),
+//             totalThisMonth: (totalThisMonth[0].totalCurrentMonth*240/1000).toFixed(2),
+//             estimatedBill: estimatedBill.toFixed(2)
+//         });
+//     }catch(err) {
+//         console.error("Error fetching data", err);
+//         res.status(500).json({ 
+//             error: "Internal Server Error",
+//             currentUsage: "Internal Server Error",
+//             totalThisMonth: "Internal Server Error",
+//             estimatedBill: "Internal Server Error" 
 
-        });
-    }
-});
+//         });
+//     }
+// });
+
 app.get('/', (req, res) => {
   const cards = [
     { title: 'Live Usage / Hour', value: '12.3 kWh', id: 'currentUsage', unit: 'kWh' },
-    { title: 'Total This Month', value: '320.7 kWh', id: 'totalThisMonth', unit: 'kWh' },
+    { title: 'Total Today', value: '320.7 kWh', id: 'dailyAverage', unit: 'kWh' },
     { title: 'Month End Estimated Bill', value: 'Rs 1230.00', id: 'estimatedBill', unit: 'Rs' },
   ];
 
@@ -309,8 +513,8 @@ app.get('/', (req, res) => {
 app.get('/w', (req, res) => {
     const cards = [
         { title: 'Live Usage / Hour', value: 'Rs 123.00', id: 'currentUsage', unit: 'Rs' },
-        { title: 'Daily Average', value: 'Rs 150.00', id: 'dailyAverage', unit: 'Rs' },
-        { title: 'Estimated Bill', value: 'Rs 3200.00', id: 'estimatedBill', unit: 'Rs' },
+        { title: 'Total Today', value: 'Rs 150.00', id: 'dailyAverage', unit: 'Rs' },
+        { title: 'Month End Estimated Bill', value: 'Rs 3200.00', id: 'estimatedBill', unit: 'Rs' },
     ];
     
     const chartData = {

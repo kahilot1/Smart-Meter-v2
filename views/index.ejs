@@ -9,61 +9,55 @@
   <script>
     // Make cards array available in the browser from server-side EJS
     const cards = <%- JSON.stringify(cards) %>;
+    
+    async function fetchAndUpdateData(speed) {
+      try{
+        let response = null;
+        const option = "<%= option %>";
+        if (option == "kWh"){
+          response = await fetch("/api/kWh/" + speed);
+        }
+        else if (option == "monetary") {
+          response = await fetch("/api/monetary/" + speed);
+        }
 
-    async function fetchAndUpdateData() {
-        try {
-          if (<%= option == "kWh" %>) {
-            const response = await fetch('/api/kWh');
-            if (!response.ok) {
-                throw new Error('Network response was not ok');
-            }
-            const data = await response.json();
-            console.log(data);
-            // Loop through each card and update its value
-            cards.forEach(card => {
-                const cardElement = document.getElementById(card.id);
-                if (cardElement) {
-                    const valueElement = cardElement.querySelector('p');
-                    console.log(data[card.id]);
-                    if (valueElement && data[card.id] !== undefined) {
-                    valueElement.textContent = data[card.id] + ' ' + card.unit;
-                    } else {
-                        console.error(`Element with ID ${card.id} not found or data is undefined`);
-                    }
-                }
-            });
-        } if (<%= option == "monetary" %>) {
-            const response = await fetch('/api/monetary');
-            if (!response.ok) {
-                throw new Error('Network response was not ok');
-            }
-            const data = await response.json();
-            console.log(data);
-            // Loop through each card and update its value
-            cards.forEach(card => {
-                const cardElement = document.getElementById(card.id);
-                if (cardElement) {
-                    const valueElement = cardElement.querySelector('p');
-                    console.log(data[card.id]);
-                    if (valueElement && data[card.id] !== undefined) {
-                    valueElement.textContent = data[card.id] + ' ' + card.unit;
-                    } else {
-                        console.error(`Element with ID ${card.id} not found or data is undefined`);
-                    }
-                }
-            });
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
         }
-      
-      } catch (error) {
-            console.error('Error fetching data:', error);
-        }
+
+        const data = await response.json();
+        // Update card values
+        Object.entries(data).forEach(([key, value]) => {
+          const card = document.getElementById(key);
+          const unit = cards.find(card => card.id === key)?.unit || '';
+          if (card) {
+            if (unit == "kWh"){
+              card.querySelector('p').textContent = value + " " + unit;
+            }
+            else{
+              card.querySelector('p').textContent = unit + " " + value;
+            }
+            
+          }
+        });
+      }catch (error) {
+        console.error('Error fetching data:', error);
+      }
     }
+  fetchAndUpdateData("slow");
+  fetchAndUpdateData("fast");
 
-    // Initial call
-    fetchAndUpdateData();
+  // Update data every 30 minutes
+  setInterval(() => {
+    fetchAndUpdateData("slow");
+  }, 1800000); // 30 minutes in milliseconds
 
-    // Refresh every 10 seconds
-    setInterval(fetchAndUpdateData, 120000);
+  fetchAndUpdateData("fast");
+  // Update data every 2 seconds
+  setInterval(() => {
+    fetchAndUpdateData("fast");
+  }, 2000);
+
 </script>
 
   <style>
