@@ -176,7 +176,7 @@ app.post('/api/arduinoData', async (req, res) => {
   }
 });
 
-
+// API endpoints for fast and slow usage
 app.get('/api/monetary/fast', async (req, res) => {
   try{
     let currentUsage = await RawData.findOne().sort({ timestamp: -1 }).limit(1);
@@ -346,6 +346,43 @@ app.get('/api/kWh/slow', async (req, res) => {
     });
   }
   
+});
+
+// API endpoint for chart data
+
+app.get('/api/chartData/kWh', async (req, res) => {
+  // Fetch all data of today from the database, for each available hour, calculate the total power usage in kWh and for the current hour, show data in 10 minute intervals. If data unavailable, show 0 for that hour.
+
+  try {
+    const today = new Date();
+    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const previousHour = new Date(now);
+    previousHour.setMinutes(0, 0, 0);
+    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+
+    const rawData = await RawData.aggregate([
+      {
+        $match: {
+          timestamp: {
+            $gte: startOfDay,
+            // Ensure we only get data until the previous hour
+            $lt: previousHour
+          }
+        }
+      },
+      {
+        $group: {
+          _id: { $hour: "$timestamp" },
+          totalKWh: { $sum: "$kWh" }
+        }
+      },
+      {
+        $sort: { _id: 1 } // Sort by hour
+      }
+    ]);
+    
+    // Create an array for the chart data
+     
 });
 
 // app.get('/api/monetary', async (req, res) => {
