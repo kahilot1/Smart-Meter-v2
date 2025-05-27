@@ -129,7 +129,7 @@ app.post('/api/arduinoData', async (req, res) => {
     const current = voltage * 30;
 
     // Parse timestamp from client
-    const currentTimestamp = new Date(timestamp);
+    const currentTimestamp = new Date(timestamp + "Z");
 
     // Fetch last reading from DB (assuming sorted by timestamp descending)
     const lastEntry = await RawData.findOne().sort({ timestamp: -1 });
@@ -166,6 +166,7 @@ app.post('/api/arduinoData', async (req, res) => {
       kWh: kWh
     });
 
+    console.log(newEntry);
     await newEntry.save();
 
     res.status(200).json({ message: 'Data received successfully', kWh: kWh.toFixed(4) });
@@ -214,13 +215,22 @@ app.get('/api/kWh/fast', async (req, res) => {
 
 app.get('/api/monetary/slow', async (req, res) => {
   try{
-    // Find Total today and mont end estimated bill(averageDay * 30)
+    const now = new Date();
+
+    // Get today's start and end in UTC
+    const utcTodayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const utcTomorrowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+
+    // Get first and next month start in UTC
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+
     const totalToday = await RawData.aggregate([
       {
         $match: {
           timestamp: {
-            $gte: new Date(new Date().setHours(0, 0, 0, 0)),
-            $lt: new Date(new Date().setHours(24, 0, 0, 0))
+            $gte: new Date(utcTodayStart),
+            $lt: new Date(utcTomorrowStart)
           }
         }
       },
@@ -241,8 +251,8 @@ app.get('/api/monetary/slow', async (req, res) => {
       {
         $match: {
           timestamp: {
-            $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
-            $lt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1)
+            $gte: new Date(monthStart),
+            $lt: new Date(nextMonthStart)
           }
         }
       },
@@ -281,14 +291,24 @@ app.get('/api/monetary/slow', async (req, res) => {
   
 });
 app.get('/api/kWh/slow', async (req, res) => {
-  try{
-    // Find Total today and mont end estimated bill(averageDay * 30)
+  try {
+    const now = new Date();
+
+    // Get today's start and end in UTC
+    const utcTodayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const utcTomorrowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+
+    // Get first and next month start in UTC
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+
+    // Total energy for today
     const totalToday = await RawData.aggregate([
       {
         $match: {
           timestamp: {
-            $gte: new Date(new Date().setHours(0, 0, 0, 0)),
-            $lt: new Date(new Date().setHours(24, 0, 0, 0))
+            $gte: utcTodayStart,
+            $lt: utcTomorrowStart
           }
         }
       },
@@ -303,14 +323,16 @@ app.get('/api/kWh/slow', async (req, res) => {
           _id: 0,
           totalEnergyToday: 1
         }
-      }]);
+      }
+    ]);
 
+    // Average daily usage this month
     const averageDailyUsage = await RawData.aggregate([
       {
         $match: {
           timestamp: {
-            $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
-            $lt: new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1)
+            $gte: monthStart,
+            $lt: nextMonthStart
           }
         }
       },
@@ -331,41 +353,43 @@ app.get('/api/kWh/slow', async (req, res) => {
           _id: 0,
           averageDailyUsage: 1
         }
-      }]);
-    const estimatedBill = calculateEstimatedBill(averageDailyUsage[0].averageDailyUsage * 30 * 24);
-    let totalTodayValue = totalToday[0] ? totalToday[0].totalEnergyToday : 0;
+      }
+    ]);
+
+    // Default to 0 if no data
+    const totalTodayValue = totalToday[0]?.totalEnergyToday || 0;
+    const averagePerDay = averageDailyUsage[0]?.averageDailyUsage || 0;
+
+    // Assuming you want to estimate 30 * 24 hours (total kWh)
+    const estimatedBill = calculateEstimatedBill(averagePerDay * 30 * 1); // 1 day = 1 total daily kWh
 
     res.json({
-      dailyAverage: (totalTodayValue).toFixed(2),
-      estimatedBill: (estimatedBill).toFixed(2)
-    })
-  }catch(err) {
-    console.error("Error fetching data", err);
-    res.status(500).json({ 
-        error: "Internal Server Error"
+      dailyAverage: totalTodayValue.toFixed(2),
+      estimatedBill: estimatedBill.toFixed(2)
     });
+
+  } catch (err) {
+    console.error("Error fetching data", err);
+    res.status(500).json({ error: "Internal Server Error" });
   }
-  
 });
+
 
 // API endpoint for chart data
 
 app.get('/api/chartData/kWh', async (req, res) => {
-  // Fetch all data of today from the database, for each available hour, calculate the total power usage in kWh and for the current hour, show data in 10 minute intervals. If data unavailable, show 0 for that hour.
-
   try {
-    const today = new Date();
-    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const now = new Date();
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const previousHour = new Date(now);
-    previousHour.setMinutes(0, 0, 0);
-    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    previousHour.setUTCMinutes(0, 0, 0);
+    const endOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
 
     const rawData = await RawData.aggregate([
       {
         $match: {
           timestamp: {
             $gte: startOfDay,
-            // Ensure we only get data until the previous hour
             $lt: previousHour
           }
         }
@@ -377,12 +401,74 @@ app.get('/api/chartData/kWh', async (req, res) => {
         }
       },
       {
-        $sort: { _id: 1 } // Sort by hour
+        $sort: { _id: 1 }
       }
     ]);
-    
-    // Create an array for the chart data
-     
+
+    // Fill in missing hours with 0 values
+    const values = [];
+    const labels = [];
+    for (let hour = 0; hour < 24; hour++) {
+      const hourData = rawData.find(d => d._id === hour);
+      values.push(hourData ? hourData.totalKWh : 0);
+      labels.push(`${hour}:00`);
+    }
+
+    const chartData = { values, labels, unit: "kWh" };
+    console.debug(chartData);
+    res.json(chartData);
+
+  } catch (err) {
+    console.error("Error fetching data", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+app.get('/api/chartData/monetary', async (req, res) => {
+  try {
+    const now = new Date();
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const previousHour = new Date(now);
+    previousHour.setUTCMinutes(0, 0, 0);
+    const endOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+
+    const rawData = await RawData.aggregate([
+      {
+        $match: {
+          timestamp: {
+            $gte: startOfDay,
+            $lt: previousHour
+          }
+        }
+      },
+      {
+        $group: {
+          _id: { $hour: "$timestamp" },
+          totalKWh: { $sum: "$kWh" }
+        }
+      },
+      {
+        $sort: { _id: 1 }
+      }
+    ]);
+
+    // Fill in missing hours with 0 values
+    const values = [];
+    const labels = [];
+    console.log(rawData);
+    for (let hour = 0; hour < 24; hour++) {
+      const hourData = rawData.find(d => d._id === hour);
+      const moneyData = hourData ? calculateEstimatedBillMod(hourData.totalKWh) : 0;
+      values.push(hourData ? moneyData : 0);
+      labels.push(`${hour}:00`);
+    }
+
+    const chartData = { values, labels, unit: "RS/Hour" };
+    res.json(chartData);
+
+  } catch (err) {
+    console.error("Error fetching data", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 });
 
 // app.get('/api/monetary', async (req, res) => {

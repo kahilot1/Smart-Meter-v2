@@ -51,7 +51,7 @@
           
           // Update chart with new data
 
-          const chartData = getChartData.chartData || { values: [], labels: [], unit: '' };
+          const chartData = getChartData || { values: [], labels: [], unit: '' };
           window.usageChart.data.datasets[0].data = chartData.values;
           window.usageChart.data.labels = chartData.labels;
           window.usageChart.data.datasets[0].label = 'Electricity Usage (' + chartData.unit + ')';
@@ -63,8 +63,6 @@
       }
     }
   fetchAndUpdateData("slow");
-  fetchAndUpdateData("fast");
-
   // Update data every 30 minutes
   setInterval(() => {
     fetchAndUpdateData("slow");
